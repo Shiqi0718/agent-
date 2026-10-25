@@ -1,0 +1,7 @@
+# 本项目只使用 Python 标准库，没有第三方 Python 依赖。
+# 需要的外部程序：FFmpeg（含 ffprobe），并加入系统 PATH。
+# 安装示例（Windows）：
+#   winget install Gyan.FFmpeg
+# 验证：
+#   ffmpeg -version
+#   ffprobe -version
