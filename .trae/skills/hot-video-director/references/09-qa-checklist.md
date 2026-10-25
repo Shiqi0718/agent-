@@ -89,21 +89,31 @@
 - [ ] 手机上看一遍（小屏是最真实的检验）。
 - [ ] 文件大小可上传（抖音 >300MB 需分片，尽量压到 300MB 内）。
 
-## 9. 交付命名
+## 9. 交付位置与命名
+
+用户指定根目录：`D:\Trae work\Trae work处理文件夹`
+（沙箱内只能在 `/workspace` 写，结构保持一致）
 
 ```
-/workspace/deliver/<日期>_<平台>_<主题>_v<N>.mp4
-/workspace/deliver/<日期>_<平台>_<主题>_v<N>_cover.png
-/workspace/deliver/<日期>_<平台>_<主题>_v<N>_notes.md
+01_素材/        原始素材，只读不改
+02_中间文件/    切片、代理、ASS、音频、LUT
+03_成片/        <日期>_<平台>_<主题>_v<N>.mp4
+04_封面/        <日期>_<平台>_<主题>_v<N>_cover.png
+05_说明/        <日期>_<平台>_<主题>_v<N>_notes.md
 ```
 
 示例：
 ```
-/workspace/deliver/20261025_douyin_3个快捷键_v1.mp4
-/workspace/deliver/20261025_douyin_3个快捷键_v1_notes.md
+03_成片/20261025_douyin_3个快捷键_v1.mp4
+04_封面/20261025_douyin_3个快捷键_v1_cover.png
+05_说明/20261025_douyin_3个快捷键_v1_notes.md
 ```
 
-`notes.md` 固定三段：结构说明 / 我替你做的决定 / 可调项。
+规则：
+- 平台代号只用 `douyin` / `bilibili`。
+- 主题 4–8 个中文字，不含空格、斜杠、冒号。
+- 改版递增 vN，旧版保留，不覆盖。
+- `notes.md` 固定三段：结构说明 / 我替你做的决定 / 可调项。
 
 ## 10. 60 秒快检（没时间时的最低标准）
 
