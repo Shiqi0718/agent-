@@ -141,12 +141,29 @@ def _make_plan(settings, logger, src: Path, need: str, mock: bool):
     if not settings.cloud_ready:
         raise CloudError("未配置云端 API：请复制 .env.example 为 .env 并填写 LLM_API_KEY，或加 --mock")
 
+    target = planmod.guess_target_duration(need)
+    if target is not None:
+        if target > info["duration"] - 0.5:
+            logger.warning(
+                "目标 %.1fs 超过素材 %.1fs，按素材上限处理（不做慢放）；要更长得补素材或拆条",
+                target,
+                info["duration"],
+            )
+            target = info["duration"]
+        logger.info("识别到目标时长 %.1fs", target)
+
     planner = CloudPlanner(settings, logger)
-    plan_obj, raw_text = planner.analyze(need, info, frames)
-    raw_path = settings.archive_dir / "方案" / f"{src.stem}_{datetime.now():%Y%m%d_%H%M%S}_raw.txt"
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_path.write_text(raw_text, encoding="utf-8")
-    logger.info("云端原始回复已保存: %s", raw_path)
+    plan_obj, _ = planner.analyze(need, info, frames, target=target)
+
+    raw_dir = settings.archive_dir / "方案"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    single = len(planner.trace) == 1
+    for index, item in enumerate(planner.trace, 1):
+        suffix = "raw" if single else f"raw{index}"
+        raw_path = raw_dir / f"{src.stem}_{stamp}_{suffix}.txt"
+        raw_path.write_text(item["text"], encoding="utf-8")
+        logger.info("云端原始回复（%s）已保存: %s", item["stage"], raw_path)
     return plan_obj, info
 
 

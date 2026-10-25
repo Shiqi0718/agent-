@@ -12,9 +12,12 @@ sys.path.insert(0, str(ROOT))
 from core.plan import (  # noqa: E402
     PlanError,
     build_timeline,
+    guess_target_duration,
+    kept_duration,
     mock_plan,
     parse_plan_json,
     save_plan,
+    within_target,
 )
 from core.timeutil import TimeFormatError, parse_time, parse_range  # noqa: E402
 
@@ -118,6 +121,42 @@ class PlanParseTest(unittest.TestCase):
         segments, total = build_timeline(plan)
         self.assertGreaterEqual(len(segments), 1)
         self.assertGreater(total, 0)
+
+
+class TargetDurationTest(unittest.TestCase):
+    def test_strong_cue(self):
+        self.assertAlmostEqual(guess_target_duration("剪成10秒左右的高能卡点"), 10.0)
+        self.assertAlmostEqual(guess_target_duration("总时长控制在 20 秒"), 20.0)
+
+    def test_ignore_hook_and_rhythm(self):
+        # 钩子秒数、节奏秒数不是目标时长，不能被误识别
+        self.assertIsNone(guess_target_duration("前3秒用最强画面做钩子"))
+        self.assertIsNone(guess_target_duration("每8-12秒必须有一次变化"))
+
+    def test_range_midpoint(self):
+        self.assertAlmostEqual(guess_target_duration("剪成 8-12 秒的卡点片"), 10.0)
+
+    def test_chinese_minutes(self):
+        self.assertAlmostEqual(guess_target_duration("做成两分钟的口播"), 120.0)
+
+    def test_weak_cue(self):
+        self.assertAlmostEqual(guess_target_duration("这条片时长大约 45 秒"), 45.0)
+
+    def test_kept_duration_overlap(self):
+        plan = parse_plan_json(
+            '{"hooks":"","cut_list":['
+            '{"start":"0","end":"5","action":"保留"},'
+            '{"start":"3","end":"8","action":"保留"}],'
+            '"bgm_time":"","comment":""}'
+        )
+        self.assertAlmostEqual(kept_duration(plan), 8.0)
+
+    def test_within_target(self):
+        self.assertTrue(within_target(9.0, 10.0))
+        self.assertTrue(within_target(11.0, 10.0))
+        self.assertFalse(within_target(6.0, 10.0))
+        # 绝对容差兜底：短片上 1 秒内都算过
+        self.assertTrue(within_target(2.5, 3.0))
 
 
 if __name__ == "__main__":

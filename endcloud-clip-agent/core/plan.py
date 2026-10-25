@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,34 @@ from .timeutil import TimeFormatError, fmt_clock, parse_time
 
 KEEP_ACTIONS = {"保留", "keep", "keep_it", "1", "true", "yes", "是"}
 DROP_ACTIONS = {"删除", "删掉", "drop", "cut", "remove", "0", "false", "no", "否"}
+
+# ---- 目标时长识别：只认明确说出口的时长，不猜 ----
+# 中文常用写法单独列，避免「一分钟」被数字正则漏掉
+_CN_DURATIONS = {
+    "半分钟": 30.0,
+    "一分钟": 60.0,
+    "一分半": 90.0,
+    "两分钟": 120.0,
+    "三分钟": 180.0,
+    "五分钟": 300.0,
+}
+
+# 强提示词：出现这些词，才算用户在下「时长指令」
+_STRONG_CUES = (
+    "剪成", "剪到", "剪出", "剪短到", "做成", "压到", "压成", "缩到", "缩短到",
+    "控制在", "控制到", "凑到", "做到", "总长", "总时长", "成片时长", "卡在",
+)
+# 弱提示词：单独出现时不够确定，只在没有强提示时兜底
+_WEAK_CUES = ("时长", "大约")
+
+_TARGET_RANGE_RE = re.compile(
+    r"(?P<a>\d+(?:\.\d+)?)\s*[-~—到至]\s*(?P<b>\d+(?:\.\d+)?)\s*(?P<u>秒钟|秒|sec|分钟|min|s)",
+    re.I,
+)
+_TARGET_SINGLE_RE = re.compile(
+    r"(?P<a>\d+(?:\.\d+)?)\s*(?P<u>秒钟|秒|sec|分钟|min|s)",
+    re.I,
+)
 
 
 class PlanError(ValueError):
@@ -217,6 +246,92 @@ def build_timeline(plan: Plan) -> tuple[list[Segment], float]:
     if not segments:
         raise PlanError("保留片段互相覆盖或长度为零，无法生成时间轴")
     return segments, offset
+
+
+def _has_cue(text: str, start: int, words: tuple[str, ...], window: int = 8) -> bool:
+    """数字前面一小段里有没有提示词，避免把「前 3 秒」当成目标时长。"""
+    return any(word in text[max(0, start - window) : start] for word in words)
+
+
+def _unit_factor(unit: str) -> float:
+    return 60.0 if unit.lower() in {"分钟", "min"} else 1.0
+
+
+def _clamp_target(seconds: float) -> float | None:
+    """过滤明显不合理的结果（比如「3 秒」当钩子、「1080 秒」当分辨率）。"""
+    if seconds < 2 or seconds > 3600:
+        return None
+    return round(seconds, 1)
+
+
+def guess_target_duration(need: str) -> float | None:
+    """从用户需求里识别目标成片时长（秒）。识别不到就返回 None，绝不瞎猜。
+
+    只认明确说了时长的写法：剪成 10 秒 / 控制在 15 秒内 / 8-12 秒 / 两分钟。
+    「前 3 秒做钩子」「每 8-12 秒一次变化」这类节奏描述会被排除。
+    """
+    text = (need or "").strip()
+    if not text:
+        return None
+
+    for word, seconds in _CN_DURATIONS.items():
+        if word in text:
+            return seconds
+
+    # 1) 明确区间：「剪成 8-12 秒」取中值
+    for match in _TARGET_RANGE_RE.finditer(text):
+        if not _has_cue(text, match.start(), _STRONG_CUES):
+            continue
+        low, high = float(match.group("a")), float(match.group("b"))
+        if high > low > 0:
+            value = _clamp_target((low + high) / 2 * _unit_factor(match.group("u")))
+            if value is not None:
+                return value
+
+    matches = list(_TARGET_SINGLE_RE.finditer(text))
+
+    # 2) 强提示词 + 单个数字
+    for match in matches:
+        if _has_cue(text, match.start(), _STRONG_CUES):
+            value = _clamp_target(float(match.group("a")) * _unit_factor(match.group("u")))
+            if value is not None:
+                return value
+
+    # 3) 「10 秒左右 / 15 秒以内」
+    for match in matches:
+        suffix = text[match.end() : match.end() + 4]
+        if suffix.startswith(("左右", "上下", "以内", "之内", "出头")):
+            value = _clamp_target(float(match.group("a")) * _unit_factor(match.group("u")))
+            if value is not None:
+                return value
+
+    # 4) 弱提示词兜底：「时长大约 45 秒」
+    for match in matches:
+        if _has_cue(text, match.start(), _WEAK_CUES):
+            value = _clamp_target(float(match.group("a")) * _unit_factor(match.group("u")))
+            if value is not None:
+                return value
+
+    return None
+
+
+def kept_duration(plan: Plan) -> float:
+    """保留片段去重叠后的总时长，与 build_timeline 同口径。"""
+    total = 0.0
+    cursor = 0.0
+    for cut in sorted(plan.keep_items(), key=lambda c: c.start):
+        start = max(cut.start, cursor)
+        if cut.end - start > 0.05:
+            total += cut.end - start
+            cursor = cut.end
+    return round(total, 3)
+
+
+def within_target(actual: float, target: float, ratio: float = 0.2, min_delta: float = 1.0) -> bool:
+    """成片时长是否达标：允许 ±20% 或 ±1 秒，取更宽的那个。"""
+    if target <= 0:
+        return True
+    return abs(actual - target) <= max(min_delta, target * ratio)
 
 
 def save_plan(plan: Plan, path: Path) -> Path:
