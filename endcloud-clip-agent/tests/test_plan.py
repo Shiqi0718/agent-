@@ -26,13 +26,13 @@ VALID = """
 ```json
 {
   "hooks": "前 3 秒用结果反差",
+  "overall_suggest": "开场紧、中段删掉拖沓部分、结尾留钩子",
   "cut_list": [
-    {"start": "00:00:00", "end": "00:00:05", "action": "保留", "subtitle": "先看结果"},
-    {"start": "00:00:05", "end": "00:00:08", "action": "删除", "subtitle": ""},
-    {"start": "00:00:08", "end": "00:00:12", "action": "保留", "subtitle": "结尾留钩子"}
+    {"start": "00:00:00", "end": "00:00:05", "action": "keep", "subtitle": "先看结果", "note": "卡点 0.5s"},
+    {"start": "00:00:05", "end": "00:00:08", "action": "delete", "subtitle": "", "note": "拖沓"},
+    {"start": "00:00:08", "end": "00:00:12", "action": "keep", "subtitle": "结尾留钩子", "note": "转场"}
   ],
-  "bgm_time": "00:00:02,00:00:09",
-  "comment": "中段可以再快一点"
+  "bgm_plan": {"bgm_name": "轻快电子", "beat_points": ["00:00:02", "00:00:09"]}
 }
 ```
 """
@@ -60,8 +60,21 @@ class PlanParseTest(unittest.TestCase):
     def test_valid_with_fence(self):
         plan = parse_plan_json(VALID)
         self.assertEqual(plan.hooks, "前 3 秒用结果反差")
+        self.assertIn("结尾留钩子", plan.overall_suggest)
         self.assertEqual(len(plan.cuts), 3)
         self.assertEqual(plan.cuts[1].action, "删除")
+        self.assertEqual(plan.cuts[0].note, "卡点 0.5s")
+        self.assertEqual(plan.bgm_plan.name, "轻快电子")
+        self.assertEqual(plan.bgm_plan.beat_points, ["00:00:02", "00:00:09"])
+
+    def test_bgm_string_tolerated(self):
+        plan = parse_plan_json(
+            '{"hooks":"","overall_suggest":"","cut_list":'
+            '[{"start":"0","end":"3","action":"keep"}],'
+            '"bgm_plan":"节奏感强的鼓点"}'
+        )
+        self.assertEqual(plan.bgm_plan.name, "节奏感强的鼓点")
+        self.assertEqual(plan.bgm_plan.beat_points, [])
 
     def test_timeline(self):
         plan = parse_plan_json(VALID)
@@ -74,10 +87,10 @@ class PlanParseTest(unittest.TestCase):
 
     def test_overlap_clamped(self):
         plan = parse_plan_json(
-            '{"hooks":"","cut_list":['
-            '{"start":"0","end":"5","action":"保留"},'
-            '{"start":"3","end":"8","action":"保留"}],'
-            '"bgm_time":"","comment":""}'
+            '{"hooks":"","overall_suggest":"","cut_list":['
+            '{"start":"0","end":"5","action":"keep"},'
+            '{"start":"3","end":"8","action":"keep"}],'
+            '"bgm_plan":{"bgm_name":"","beat_points":[]}}'
         )
         segments, total = build_timeline(plan)
         self.assertEqual(len(segments), 2)
@@ -90,20 +103,22 @@ class PlanParseTest(unittest.TestCase):
 
     def test_missing_field(self):
         with self.assertRaises(PlanError):
-            parse_plan_json('{"hooks":"","cut_list":[]}')
+            parse_plan_json('{"hooks":"","overall_suggest":"","cut_list":[]}')
 
     def test_bad_action(self):
         with self.assertRaises(PlanError):
             parse_plan_json(
-                '{"hooks":"","cut_list":[{"start":"0","end":"3","action":"也许","subtitle":""}],'
-                '"bgm_time":"","comment":""}'
+                '{"hooks":"","overall_suggest":"","cut_list":'
+                '[{"start":"0","end":"3","action":"也许","subtitle":""}],'
+                '"bgm_plan":{"bgm_name":"","beat_points":[]}}'
             )
 
     def test_no_keep(self):
         with self.assertRaises(PlanError):
             parse_plan_json(
-                '{"hooks":"","cut_list":[{"start":"0","end":"3","action":"删除","subtitle":""}],'
-                '"bgm_time":"","comment":""}'
+                '{"hooks":"","overall_suggest":"","cut_list":'
+                '[{"start":"0","end":"3","action":"delete","subtitle":""}],'
+                '"bgm_plan":{"bgm_name":"","beat_points":[]}}'
             )
 
     def test_save_and_reload(self):
@@ -144,10 +159,10 @@ class TargetDurationTest(unittest.TestCase):
 
     def test_kept_duration_overlap(self):
         plan = parse_plan_json(
-            '{"hooks":"","cut_list":['
-            '{"start":"0","end":"5","action":"保留"},'
-            '{"start":"3","end":"8","action":"保留"}],'
-            '"bgm_time":"","comment":""}'
+            '{"hooks":"","overall_suggest":"","cut_list":['
+            '{"start":"0","end":"5","action":"keep"},'
+            '{"start":"3","end":"8","action":"keep"}],'
+            '"bgm_plan":{"bgm_name":"","beat_points":[]}}'
         )
         self.assertAlmostEqual(kept_duration(plan), 8.0)
 

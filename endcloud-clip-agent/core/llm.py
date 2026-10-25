@@ -1,4 +1,7 @@
-"""云端规划器：只上传「文字需求 + 少量关键帧」，只接收结构化 JSON 方案。"""
+"""云端规划器：只上传「文字需求 + 少量关键帧」，只接收结构化 JSON 方案。
+
+默认对接 DeepSeek Flash（多模态）：本地抽 3–8 张关键帧，压缩后以 base64 发送。
+"""
 
 from __future__ import annotations
 
@@ -20,25 +23,35 @@ from .plan import (
 )
 
 SYSTEM_PROMPT = """你是资深短视频/漫剧剪辑导演，同时精通抖音与 B 站的爆款节奏。
-你只输出一个 JSON 对象，不要任何解释、Markdown、前后缀文字。
+你只输出一个 JSON 对象，禁止任何解释、前言、Markdown、代码块标记或前后缀文字。
 
-JSON 字段固定如下：
+JSON 结构固定如下，字段名不得改动：
 {
-  "hooks": "钩子建议（一句话，说明前 3 秒靠什么留住人）",
+  "hooks": "短视频钩子文案建议",
+  "overall_suggest": "整体剪辑节奏建议",
   "cut_list": [
-    {"start": "00:00:00", "end": "00:00:05", "action": "保留", "subtitle": "这一段的字幕"}
+    {
+      "start": "00:00:00",
+      "end": "00:00:05",
+      "action": "keep 或 delete",
+      "subtitle": "本段字幕内容",
+      "note": "卡点/转场备注"
+    }
   ],
-  "bgm_time": "卡点时间戳，如 00:00:02,00:00:06",
-  "comment": "整体优化建议"
+  "bgm_plan": {
+    "bgm_name": "推荐 BGM 风格",
+    "beat_points": ["00:00:03", "00:00:07"]
+  }
 }
 
 硬性要求：
-1. cut_list 必须按源视频时间轴，从 00:00:00 开始，覆盖到视频结尾；
-2. action 只能是「保留」或「删除」；
-3. 每个「保留」段都要给 subtitle，单行不超过 14 个字，口语化，不要标点堆砌；
-4. 至少保留一个「保留」段；若用户给了目标时长，「保留」段合计必须接近目标（±10% 以内）；无论如何不超过源视频时长；
+1. cut_list 按源视频时间轴从 00:00:00 开始，覆盖到视频结尾；
+2. action 只能是 keep 或 delete，不要写别的词；
+3. 每个 keep 段都要给 subtitle（单行 ≤14 字，口语化）和 note（卡点/转场说明）；
+4. 至少一个 keep 段；用户给了目标时长时，keep 段合计必须接近目标（±10%）；
 5. 时间格式 HH:MM:SS 或 HH:MM:SS.mmm，且必须落在视频时长内；
-6. 不要返回散文式方案，不要解释字段含义；时长不够就改 cut_list，不要只写在 comment 里当建议。"""
+6. 你需要结合关键帧画面判断哪段值得留、哪段该删，不要只按时长平均分配；
+7. 时长不够就改 cut_list 的边界，不要只写在 overall_suggest 里当建议。"""
 
 
 class CloudError(RuntimeError):
@@ -70,7 +83,7 @@ class CloudPlanner:
             f"{info['fps']} fps，{'有' if info['has_audio'] else '无'}音轨\n"
             f"{target_line}"
             f"【关键帧时间点】{', '.join(f.clock for f in frames)}\n"
-            "请给出可直接执行的剪辑方案。"
+            "请结合关键帧画面，给出可直接执行的 JSON 剪辑方案。"
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
         if self.settings.llm_vision:
@@ -147,13 +160,13 @@ class CloudPlanner:
         if high < low:
             high = low
         return (
-            f"【时长纠偏】上一版「保留」合计 {actual:.2f} 秒，目标 {target:.2f} 秒，"
+            f"【时长纠偏】上一版 keep 段合计 {actual:.2f} 秒，目标 {target:.2f} 秒，"
             f"需要{'增加' if diff > 0 else '减少'} {abs(diff):.2f} 秒。\n"
-            "只改 cut_list，其它字段保持原样；硬性要求：\n"
+            "只改 cut_list，hooks / overall_suggest / bgm_plan 保持原样；硬性要求：\n"
             f"1. 从 00:00:00 连续覆盖到 {duration:.2f} 秒，不留空档；\n"
-            f"2. 「保留」段合计必须落在 {low:.2f}–{high:.2f} 秒；\n"
-            "3. 必须通过调整保留/删除的边界来达成，不要写进 comment 当建议；\n"
-            "4. 每个「保留」段仍给 ≤14 字字幕，保留段至少 2 段。\n"
+            f"2. keep 段合计必须落在 {low:.2f}–{high:.2f} 秒；\n"
+            "3. 必须通过调整 keep/delete 的边界来达成，不要写进 overall_suggest 当建议；\n"
+            "4. 每个 keep 段仍给 ≤14 字字幕，keep 段至少 2 段。\n"
             "直接输出完整 JSON。"
         )
 
@@ -162,6 +175,8 @@ class CloudPlanner:
             "model": self.settings.llm_model,
             "messages": messages,
             "temperature": 0.2,
+            # deepseek-flash 是推理模型，思考过程也算 completion tokens
+            "max_tokens": self.settings.llm_max_tokens,
         }
         if self.settings.llm_json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -187,7 +202,7 @@ class CloudPlanner:
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_error = f"网络错误: {exc}"
                 self.logger.warning("云端连接失败，准备重试: %s", last_error)
-            except PlanError as exc:
+            except (PlanError, CloudError) as exc:
                 last_error = f"方案不合规: {exc}"
                 self.logger.warning("云端方案解析失败，准备重试: %s", last_error)
 
@@ -196,12 +211,23 @@ class CloudPlanner:
 
 def _extract_content(data: dict) -> str:
     try:
-        message = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise CloudError(f"云端返回结构异常: {str(data)[:300]}") from exc
-    if isinstance(message, str):
-        return message
-    if isinstance(message, list):  # 部分供应商返回分段内容
-        parts = [p.get("text", "") for p in message if isinstance(p, dict)]
-        return "\n".join(parts)
-    raise CloudError("云端返回的 content 不是文本")
+    if not isinstance(message, dict):
+        raise CloudError("云端返回的 message 不是对象")
+
+    content = message.get("content")
+    if isinstance(content, list):  # 部分供应商返回分段内容
+        content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict))
+    if isinstance(content, str) and content.strip():
+        return content
+
+    # deepseek-flash 把 token 花在 reasoning_content 上时，content 可能为空
+    reasoning = message.get("reasoning_content")
+    if reasoning:
+        raise CloudError(
+            "模型只返回了思考过程，正文为空。请调大 .env 的 LLM_MAX_TOKENS（当前 "
+            f"{len(str(reasoning))} 字思考内容）"
+        )
+    raise CloudError("云端返回的 content 为空")

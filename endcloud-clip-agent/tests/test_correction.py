@@ -22,29 +22,29 @@ INFO = {"duration": 12.0, "width": 1280, "height": 720, "fps": 30.0, "has_audio"
 # 首轮：只保留 6 秒（用户要 10 秒，必须纠偏）
 BAD = {
     "hooks": "结果前置",
+    "overall_suggest": "前紧后松（这句本地不会执行）",
     "cut_list": [
-        {"start": "00:00:00", "end": "00:00:02", "action": "保留", "subtitle": "一"},
-        {"start": "00:00:02", "end": "00:00:04", "action": "删除"},
-        {"start": "00:00:04", "end": "00:00:06", "action": "保留", "subtitle": "二"},
-        {"start": "00:00:06", "end": "00:00:08", "action": "删除"},
-        {"start": "00:00:08", "end": "00:00:10", "action": "保留", "subtitle": "三"},
-        {"start": "00:00:10", "end": "00:00:12", "action": "删除"},
+        {"start": "00:00:00", "end": "00:00:02", "action": "keep", "subtitle": "一"},
+        {"start": "00:00:02", "end": "00:00:04", "action": "delete"},
+        {"start": "00:00:04", "end": "00:00:06", "action": "keep", "subtitle": "二"},
+        {"start": "00:00:06", "end": "00:00:08", "action": "delete"},
+        {"start": "00:00:08", "end": "00:00:10", "action": "keep", "subtitle": "三"},
+        {"start": "00:00:10", "end": "00:00:12", "action": "delete"},
     ],
-    "bgm_time": "00:00:02",
-    "comment": "建议再留 4 秒（这句话本地不会执行）",
+    "bgm_plan": {"bgm_name": "轻快电子", "beat_points": ["00:00:02"]},
 }
 
 # 纠偏后：保留 9 秒，落在 10 秒目标的容差内
 GOOD = {
     "hooks": "结果前置",
+    "overall_suggest": "按目标时长收紧节奏",
     "cut_list": [
-        {"start": "00:00:00", "end": "00:00:05", "action": "保留", "subtitle": "一"},
-        {"start": "00:00:05", "end": "00:00:07", "action": "删除"},
-        {"start": "00:00:07", "end": "00:00:11", "action": "保留", "subtitle": "二"},
-        {"start": "00:00:11", "end": "00:00:12", "action": "删除"},
+        {"start": "00:00:00", "end": "00:00:05", "action": "keep", "subtitle": "一"},
+        {"start": "00:00:05", "end": "00:00:07", "action": "delete"},
+        {"start": "00:00:07", "end": "00:00:11", "action": "keep", "subtitle": "二"},
+        {"start": "00:00:11", "end": "00:00:12", "action": "delete"},
     ],
-    "bgm_time": "00:00:02",
-    "comment": "已按目标时长收紧",
+    "bgm_plan": {"bgm_name": "轻快电子", "beat_points": ["00:00:02"]},
 }
 
 

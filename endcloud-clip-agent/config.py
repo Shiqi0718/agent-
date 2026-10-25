@@ -2,7 +2,8 @@
 
 设计原则：
 - 代码里不硬编码密钥；
-- Windows 默认指向 D:\\豆包\\数据，其它系统回退到项目内 data/；
+- Windows 默认使用固定目录 D:\\Trae work\\Trae work处理文件夹，其它系统回退到项目内 data/；
+- Windows 路径含空格，默认值一律用 raw 字符串 r""，运行时统一交给 pathlib；
 - 所有目录在启动时自动创建，缺目录不会中断任务。
 """
 
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+# Windows 固定根目录（含空格，raw 字符串避免转义问题）
+WINDOWS_ROOT = r"D:\Trae work\Trae work处理文件夹"
 
 
 def load_env_file(path: Path) -> None:
@@ -57,7 +61,7 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 def _default_data_root() -> str:
     if os.name == "nt":
-        return r"D:\豆包\数据"
+        return WINDOWS_ROOT
     return str(PROJECT_ROOT / "data")
 
 
@@ -68,9 +72,11 @@ class Settings:
     src_dir: Path
     out_dir: Path
     log_dir: Path
+    frame_cache_dir: Path
+    temp_dir: Path
     archive_dir: Path
     task_dir: Path
-    temp_dir: Path
+    bgm_dir: Path
     queue_db: Path
 
     # 云端大模型（OpenAI 兼容接口）
@@ -81,10 +87,13 @@ class Settings:
     llm_retries: int
     llm_json_mode: bool
     llm_vision: bool
+    llm_max_tokens: int
 
-    # 抽帧
+    # 抽帧与压缩
     frame_count: int
     frame_width: int
+    frame_quality: int
+    frame_max_kb: int
 
     # 导出
     out_width: int
@@ -106,9 +115,11 @@ class Settings:
             self.src_dir,
             self.out_dir,
             self.log_dir,
+            self.frame_cache_dir,
+            self.temp_dir,
             self.archive_dir,
             self.task_dir,
-            self.temp_dir,
+            self.bgm_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -130,11 +141,14 @@ def get_settings(refresh: bool = False) -> Settings:
     root = Path(_env("DATA_ROOT") or _default_data_root()).expanduser()
     src_dir = Path(_env("VIDEO_SRC_DIR") or (root / "视频素材")).expanduser()
     out_dir = Path(_env("VIDEO_OUT_DIR") or (root / "视频成片")).expanduser()
-    log_dir = Path(_env("LOG_DIR") or (root / "日志")).expanduser()
+    log_dir = Path(_env("LOG_DIR") or (root / "剪辑Agent日志")).expanduser()
+    frame_cache_dir = Path(_env("FRAME_CACHE_DIR") or (root / "temp_frame")).expanduser()
+    # FFmpeg 切片中转目录，和抽帧缓存分开，避免混在一起
+    temp_dir = Path(_env("TEMP_DIR") or (root / "temp_clip")).expanduser()
     archive_dir = Path(_env("ARCHIVE_DIR") or (root / "归档")).expanduser()
     task_dir = Path(_env("TASK_DIR") or (root / "任务")).expanduser()
+    bgm_dir = Path(_env("BGM_DIR") or (root / "BGM")).expanduser()
     queue_db = Path(_env("QUEUE_DB") or (task_dir / "tasks.db")).expanduser()
-    temp_dir = Path(_env("TEMP_DIR") or (task_dir / "临时")).expanduser()
 
     frame_count = min(8, max(3, _env_int("FRAME_COUNT", 5)))
 
@@ -146,19 +160,26 @@ def get_settings(refresh: bool = False) -> Settings:
         src_dir=src_dir,
         out_dir=out_dir,
         log_dir=log_dir,
+        frame_cache_dir=frame_cache_dir,
+        temp_dir=temp_dir,
         archive_dir=archive_dir,
         task_dir=task_dir,
-        temp_dir=temp_dir,
+        bgm_dir=bgm_dir,
         queue_db=queue_db,
         llm_api_key=_env("LLM_API_KEY"),
-        llm_base_url=_env("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-        llm_model=_env("LLM_MODEL", "gpt-4o-mini"),
-        llm_timeout=_env_int("LLM_TIMEOUT", 120),
+        llm_base_url=_env("LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"),
+        llm_model=_env("LLM_MODEL", "deepseek-flash"),
+        llm_timeout=_env_int("LLM_TIMEOUT", 180),
         llm_retries=_env_int("LLM_MAX_RETRY", 2),
         llm_json_mode=_env_bool("LLM_JSON_MODE", True),
+        # deepseek-flash 是多模态模型，默认开启视觉
         llm_vision=_env_bool("LLM_VISION", True),
+        # 推理模型的思考过程也占 token，留足预算，否则 content 可能为空
+        llm_max_tokens=_env_int("LLM_MAX_TOKENS", 4096),
         frame_count=frame_count,
         frame_width=_env_int("FRAME_WIDTH", 720),
+        frame_quality=_env_int("FRAME_QUALITY", 3),
+        frame_max_kb=_env_int("FRAME_MAX_KB", 180),
         out_width=_env_int("OUT_WIDTH", 1080),
         out_height=_env_int("OUT_HEIGHT", 1920),
         out_fps=_env_int("OUT_FPS", 30),

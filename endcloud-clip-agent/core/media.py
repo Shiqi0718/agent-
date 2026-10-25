@@ -12,6 +12,10 @@ from pathlib import Path
 
 from .timeutil import fmt_clock
 
+VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".flv", ".webm", ".m4v", ".ts"}
+AUDIO_EXT = {".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg", ".wma"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+
 
 class FFmpegError(RuntimeError):
     """FFmpeg / ffprobe 执行失败。"""
@@ -126,15 +130,93 @@ def video_info(path: Path) -> dict:
     }
 
 
+def scan_media(root: Path) -> dict[str, list[str]]:
+    """遍历目录，按视频 / 音频 / 图片分类，供批量任务或人工盘点。"""
+    root = Path(root).expanduser()
+    if not root.exists():
+        raise FileNotFoundError(f"素材目录不存在: {root}")
+    result: dict[str, list[str]] = {"video": [], "audio": [], "image": []}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix in VIDEO_EXT:
+            result["video"].append(str(path))
+        elif suffix in AUDIO_EXT:
+            result["audio"].append(str(path))
+        elif suffix in IMAGE_EXT:
+            result["image"].append(str(path))
+    return result
+
+
+def _compress_frame(path: Path, max_kb: int, logger=None) -> Path:
+    """关键帧超过体积上限时，降分辨率 + 降质量重压，减少上传体积。"""
+    if max_kb <= 0 or not path.exists():
+        return path
+    limit = max_kb * 1024
+    if path.stat().st_size <= limit:
+        return path
+
+    original = path.with_name(f"{path.stem}_raw{path.suffix}")
+    if original.exists():
+        original.unlink()
+    path.rename(original)
+    failed = False
+    for quality in (5, 8, 11):
+        try:
+            run_ffmpeg(
+                [
+                    "-i",
+                    str(original),
+                    "-vf",
+                    "scale='min(640,iw)':-2",
+                    "-q:v",
+                    str(quality),
+                    str(path),
+                ],
+                logger=logger,
+                timeout=60,
+            )
+        except FFmpegError:
+            failed = True
+            break
+        if path.exists() and path.stat().st_size <= limit:
+            break
+
+    if failed or not path.exists() or path.stat().st_size == 0:
+        # 压缩失败：丢掉半成品，恢复原图，保证这一帧还能用
+        if path.exists():
+            path.unlink()
+        original.rename(path)
+        if logger:
+            logger.warning("关键帧压缩失败，保留原图: %s", path.name)
+        return path
+
+    if logger:
+        logger.info(
+            "关键帧压缩：%s %.0fKB → %.0fKB",
+            path.name,
+            original.stat().st_size / 1024,
+            path.stat().st_size / 1024,
+        )
+    original.unlink()
+    return path
+
+
 def extract_frames(
     src: Path,
     out_dir: Path,
     count: int = 5,
     width: int = 720,
+    quality: int = 3,
+    max_kb: int = 180,
     logger=None,
     info: dict | None = None,
 ) -> list[Frame]:
-    """按时间均匀抽帧，数量限制在 3–8 张，只上传少量图片给云端。"""
+    """按时间均匀抽帧，数量限制在 3–8 张，只上传少量图片给云端。
+
+    抽完逐张压缩，保证单张不超过 max_kb，加快多模态模型识别。
+    """
     info = info or video_info(src)
     duration = info["duration"]
     if duration <= 0:
@@ -159,12 +241,13 @@ def extract_frames(
                     "-vf",
                     f"scale={max(160, int(width))}:-2",
                     "-q:v",
-                    "3",
+                    str(max(2, min(10, int(quality)))),
                     str(out),
                 ],
                 logger=logger,
                 timeout=60,
             )
+            _compress_frame(out, max_kb, logger=logger)
         except FFmpegError:
             if logger:
                 logger.warning("第 %d 帧抽取失败（时间 %.3fs），跳过", i + 1, t)

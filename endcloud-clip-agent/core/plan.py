@@ -1,6 +1,13 @@
 """剪辑方案：解析、校验、时间轴换算。
 
 云端只允许返回 JSON，本地必须把它变成「保留片段 + 字幕事件」才能交给 FFmpeg。
+JSON 结构固定：
+{
+  "hooks": "...",
+  "overall_suggest": "...",
+  "cut_list": [{"start","end","action":"keep / delete","subtitle","note"}],
+  "bgm_plan": {"bgm_name": "...", "beat_points": ["00:00:03"]}
+}
 """
 
 from __future__ import annotations
@@ -13,11 +20,10 @@ from typing import Any
 
 from .timeutil import TimeFormatError, fmt_clock, parse_time
 
-KEEP_ACTIONS = {"保留", "keep", "keep_it", "1", "true", "yes", "是"}
-DROP_ACTIONS = {"删除", "删掉", "drop", "cut", "remove", "0", "false", "no", "否"}
+KEEP_ACTIONS = {"keep", "keep_it", "保留", "1", "true", "yes", "是"}
+DROP_ACTIONS = {"delete", "drop", "remove", "cut", "删除", "删掉", "0", "false", "no", "否"}
 
 # ---- 目标时长识别：只认明确说出口的时长，不猜 ----
-# 中文常用写法单独列，避免「一分钟」被数字正则漏掉
 _CN_DURATIONS = {
     "半分钟": 30.0,
     "一分钟": 60.0,
@@ -50,11 +56,20 @@ class PlanError(ValueError):
 
 
 @dataclass
+class BgmPlan:
+    """云端给的 BGM 建议；本地有 BGM 素材库时才真正混音。"""
+
+    name: str = ""
+    beat_points: list[str] = field(default_factory=list)
+
+
+@dataclass
 class CutItem:
     start: float
     end: float
     action: str  # 统一为 "保留" / "删除"
     subtitle: str = ""
+    note: str = ""
 
     @property
     def is_keep(self) -> bool:
@@ -64,9 +79,9 @@ class CutItem:
 @dataclass
 class Plan:
     hooks: str
+    overall_suggest: str
     cuts: list[CutItem]
-    bgm_time: str
-    comment: str
+    bgm_plan: BgmPlan
     raw: dict[str, Any] = field(default_factory=dict)
 
     def keep_items(self) -> list[CutItem]:
@@ -82,6 +97,7 @@ class Segment:
     out_start: float
     out_end: float
     subtitle: str = ""
+    note: str = ""
 
     @property
     def duration(self) -> float:
@@ -104,7 +120,23 @@ def _normalize_action(value: Any, index: int) -> str:
         return "保留"
     if text in DROP_ACTIONS:
         return "删除"
-    raise PlanError(f"cut_list[{index}] 的 action 只能是「保留」或「删除」，收到: {value!r}")
+    raise PlanError(f"cut_list[{index}] 的 action 只能是 keep / delete，收到: {value!r}")
+
+
+def _parse_bgm(raw: Any) -> BgmPlan:
+    if raw is None:
+        return BgmPlan()
+    if isinstance(raw, str):
+        return BgmPlan(name=raw.strip())
+    if not isinstance(raw, dict):
+        raise PlanError("bgm_plan 必须是对象，包含 bgm_name 与 beat_points")
+    beats = raw.get("beat_points") or []
+    if isinstance(beats, str):
+        beats = [beats]
+    if not isinstance(beats, (list, tuple)):
+        raise PlanError("bgm_plan.beat_points 必须是数组")
+    points = [str(item).strip() for item in beats if str(item).strip()]
+    return BgmPlan(name=_as_text(raw.get("bgm_name")), beat_points=points)
 
 
 def _strip_code_fence(text: str) -> str:
@@ -159,7 +191,7 @@ def parse_plan_json(text: str) -> Plan:
     if not isinstance(data, dict):
         raise PlanError("JSON 顶层必须是对象")
 
-    required = {"hooks", "cut_list", "bgm_time", "comment"}
+    required = {"hooks", "overall_suggest", "cut_list", "bgm_plan"}
     missing = required - data.keys()
     if missing:
         raise PlanError(f"缺少字段: {', '.join(sorted(missing))}")
@@ -188,6 +220,7 @@ def parse_plan_json(text: str) -> Plan:
                 end=end,
                 action=_normalize_action(item["action"], index),
                 subtitle=_as_text(item.get("subtitle", "")),
+                note=_as_text(item.get("note", "")),
             )
         )
 
@@ -196,9 +229,9 @@ def parse_plan_json(text: str) -> Plan:
 
     plan = Plan(
         hooks=_as_text(data.get("hooks")),
+        overall_suggest=_as_text(data.get("overall_suggest")),
         cuts=cuts,
-        bgm_time=_as_text(data.get("bgm_time")),
-        comment=_as_text(data.get("comment")),
+        bgm_plan=_parse_bgm(data.get("bgm_plan")),
         raw=data,
     )
     validate_against_duration(plan, None)
@@ -239,6 +272,7 @@ def build_timeline(plan: Plan) -> tuple[list[Segment], float]:
                 out_start=offset,
                 out_end=offset + (end - start),
                 subtitle=cut.subtitle,
+                note=cut.note,
             )
         )
         offset += end - start
@@ -335,20 +369,25 @@ def within_target(actual: float, target: float, ratio: float = 0.2, min_delta: f
 
 
 def save_plan(plan: Plan, path: Path) -> Path:
+    """按云端 JSON 规范落盘，方便人工复核或再次 render。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "hooks": plan.hooks,
+        "overall_suggest": plan.overall_suggest,
         "cut_list": [
             {
                 "start": fmt_clock(c.start),
                 "end": fmt_clock(c.end),
-                "action": c.action,
+                "action": "keep" if c.is_keep else "delete",
                 "subtitle": c.subtitle,
+                "note": c.note,
             }
             for c in plan.cuts
         ],
-        "bgm_time": plan.bgm_time,
-        "comment": plan.comment,
+        "bgm_plan": {
+            "bgm_name": plan.bgm_plan.name,
+            "beat_points": plan.bgm_plan.beat_points,
+        },
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -365,15 +404,15 @@ def mock_plan(duration: float, need: str) -> Plan:
     first_end = max(0.5, min(duration * 0.5, 6.0))
     second_start = min(duration - 0.5, duration * 0.7)
     cuts = [
-        CutItem(0.0, first_end, "保留", "模拟字幕：开头钩子"),
+        CutItem(0.0, first_end, "保留", "模拟字幕：开头钩子", "模拟卡点"),
         CutItem(first_end, second_start, "删除"),
-        CutItem(second_start, duration, "保留", "模拟字幕：结尾收束"),
+        CutItem(second_start, duration, "保留", "模拟字幕：结尾收束", "模拟收尾"),
     ]
     cuts = [c for c in cuts if c.end > c.start]
     return Plan(
         hooks=f"模拟钩子：{need[:24] or '无需求文本'}",
+        overall_suggest="未配置云端 API，本地生成占位方案，仅用于验证流程",
         cuts=cuts,
-        bgm_time="每 2 秒一个卡点（模拟）",
-        comment="未配置云端 API，本地生成占位方案，仅用于验证流程",
+        bgm_plan=BgmPlan(name="模拟 BGM", beat_points=[]),
         raw={"mock": True},
     )

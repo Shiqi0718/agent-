@@ -40,8 +40,10 @@ class EndToEndTest(unittest.TestCase):
                 "OUT_CRF": "30",
                 "OUT_FPS": "24",
                 "FRAME_COUNT": "3",
+                "FRAME_MAX_KB": "180",
                 "SUBTITLE_SIZE": "32",
                 "LLM_VISION": "false",
+                "LLM_MAX_TOKENS": "1024",
                 "LLM_API_KEY": "",
             }
         )
@@ -110,13 +112,13 @@ class EndToEndTest(unittest.TestCase):
             json.dumps(
                 {
                     "hooks": "结果前置",
+                    "overall_suggest": "开场直接给结果，中段删掉等待",
                     "cut_list": [
-                        {"start": "00:00:00", "end": "00:00:03", "action": "保留", "subtitle": "开头"},
-                        {"start": "00:00:03", "end": "00:00:06", "action": "删除"},
-                        {"start": "00:00:06", "end": "00:00:09", "action": "保留", "subtitle": "结尾"},
+                        {"start": "00:00:00", "end": "00:00:03", "action": "keep", "subtitle": "开头"},
+                        {"start": "00:00:03", "end": "00:00:06", "action": "delete"},
+                        {"start": "00:00:06", "end": "00:00:09", "action": "keep", "subtitle": "结尾"},
                     ],
-                    "bgm_time": "00:00:02",
-                    "comment": "测试方案",
+                    "bgm_plan": {"bgm_name": "测试 BGM", "beat_points": ["00:00:02"]},
                 },
                 ensure_ascii=False,
             ),

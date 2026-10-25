@@ -11,7 +11,7 @@ from pathlib import Path
 from config import Settings
 
 from .media import run_ffmpeg, video_info
-from .plan import Plan, Segment
+from .plan import Plan, Segment, save_plan
 from .subtitles import SubtitleEvent, write_ass, write_srt
 
 INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
@@ -202,19 +202,22 @@ def write_notes(
     if need:
         lines += ["## 用户需求", "", need, ""]
     if plan:
+        beats = "、".join(plan.bgm_plan.beat_points) or "—"
         lines += [
             "## 云端方案",
             "",
             f"- 钩子：{plan.hooks or '—'}",
-            f"- 卡点：{plan.bgm_time or '—'}",
-            f"- 建议：{plan.comment or '—'}",
+            f"- 整体节奏：{plan.overall_suggest or '—'}",
+            f"- BGM 建议：{plan.bgm_plan.name or '—'}",
+            f"- 卡点：{beats}",
             "",
-            "| 源起点 | 源终点 | 成片起点 | 字幕 |",
-            "|---|---|---|---|",
+            "| 源起点 | 源终点 | 成片起点 | 字幕 | 卡点/转场备注 |",
+            "|---|---|---|---|---|",
         ]
         for seg in segments:
             lines.append(
-                f"| {seg.src_start:.2f}s | {seg.src_end:.2f}s | {seg.out_start:.2f}s | {seg.subtitle or '—'} |"
+                f"| {seg.src_start:.2f}s | {seg.src_end:.2f}s | {seg.out_start:.2f}s "
+                f"| {seg.subtitle or '—'} | {seg.note or '—'} |"
             )
         lines.append("")
     lines += ["## 可调项", "", "- 想更慢/更狠：调 `OUT_FPS`、`BGM_VOLUME` 或手动模式重剪。", "- 换字幕样式：改 `SUBTITLE_FONT` / `SUBTITLE_SIZE` / `SUBTITLE_MARGIN_V`。", ""]
@@ -300,15 +303,14 @@ def render_timeline(
         )
         notes = write_notes(out_path, plan, segments, events, info, settings, bgm, need)
         if plan is not None:
-            (out_path.parent / f"{out_path.stem}_plan.json").write_text(
-                json.dumps(plan.raw or {}, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            save_plan(plan, out_path.parent / f"{out_path.stem}_plan.json")
         return {
             "output": str(out_path),
             "notes": str(notes),
             "duration": round(total, 2),
             "segments": len(segments),
             "subtitles": len(events),
+            "bgm": bgm.name if bgm else "",
             "size_bytes": out_path.stat().st_size if out_path.exists() else 0,
         }
     finally:

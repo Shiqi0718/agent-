@@ -1,4 +1,4 @@
-"""本地任务队列（SQLite）：断网可排队，重启后继续跑。"""
+"""本地任务队列（SQLite）：断网可排队，重启后继续跑，失败可重试。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,20 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    result TEXT,
+    error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0
+)
+"""
 
 
 class TaskQueue:
@@ -21,20 +35,11 @@ class TaskQueue:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    result TEXT,
-                    error TEXT
-                )
-                """
-            )
+            conn.execute(SCHEMA)
+            # 老库升级：补上重试计数字段
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "retry_count" not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
 
     def add(self, mode: str, payload: dict) -> int:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -64,9 +69,24 @@ class TaskQueue:
                 "payload": json.loads(row["payload"]),
                 "result": json.loads(row["result"]) if row["result"] else None,
                 "error": row["error"],
+                "retry_count": row["retry_count"],
             }
             for row in rows
         ]
+
+    def get(self, task_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "status": row["status"],
+            "mode": row["mode"],
+            "payload": json.loads(row["payload"]),
+            "error": row["error"],
+            "retry_count": row["retry_count"],
+        }
 
     def next_pending(self) -> dict | None:
         with self._connect() as conn:
@@ -79,6 +99,7 @@ class TaskQueue:
             "id": row["id"],
             "mode": row["mode"],
             "payload": json.loads(row["payload"]),
+            "retry_count": row["retry_count"],
         }
 
     def mark(self, task_id: int, status: str, result: dict | None = None, error: str = "") -> None:
@@ -94,3 +115,25 @@ class TaskQueue:
                     task_id,
                 ),
             )
+
+    def retry(self, task_id: int) -> bool:
+        """把失败任务重新放回 pending，并累加重试次数。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = ?, error = NULL, "
+                "retry_count = retry_count + 1 WHERE id = ? AND status IN ('failed', 'running')",
+                (now, task_id),
+            )
+            return cursor.rowcount > 0
+
+    def retry_all_failed(self) -> int:
+        """一键把所有失败任务重新排队，返回重置数量。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = ?, error = NULL, "
+                "retry_count = retry_count + 1 WHERE status = 'failed'",
+                (now,),
+            )
+            return int(cursor.rowcount)
